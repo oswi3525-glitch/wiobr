@@ -68,6 +68,20 @@ export async function validatePublicMonitorUrl(value) {
   return url;
 }
 
+// Node's socket layer may call `lookup` with `options.all = true` (autoSelectFamily
+// path), in which case it expects an array of { address, family } entries. Returning a
+// bare string in that mode makes Node read `addresses[0].address` as undefined and fail
+// with ERR_INVALID_IP_ADDRESS, so both callback shapes must be supported.
+export function createPinnedLookup(pinnedAddress) {
+  return (_hostname, options, callback) => {
+    if (options && options.all) {
+      callback(null, [{ address: pinnedAddress, family: 4 }]);
+      return;
+    }
+    callback(null, pinnedAddress, 4);
+  };
+}
+
 function requestOnce(url, pinnedAddress, timeoutMs) {
   return new Promise((resolve, reject) => {
     const transport = url.protocol === 'https:' ? https : http;
@@ -75,7 +89,7 @@ function requestOnce(url, pinnedAddress, timeoutMs) {
       method: 'GET',
       agent: false,
       maxHeaderSize: 16 * 1024,
-      lookup: (_hostname, _options, callback) => callback(null, pinnedAddress, 4),
+      lookup: createPinnedLookup(pinnedAddress),
       servername: url.hostname,
       headers: {
         'User-Agent': 'WioBrowseCloud-Monitor/1.0',
@@ -102,7 +116,7 @@ function requestTextOnce(url, pinnedAddress, timeoutMs, maxBytes) {
       method: 'GET',
       agent: false,
       maxHeaderSize: 16 * 1024,
-      lookup: (_hostname, _options, callback) => callback(null, pinnedAddress, 4),
+      lookup: createPinnedLookup(pinnedAddress),
       servername: url.hostname,
       headers: { 'User-Agent': 'WioBrowseCloud/1.0', Accept: 'application/json,text/plain' },
       timeout: timeoutMs,
