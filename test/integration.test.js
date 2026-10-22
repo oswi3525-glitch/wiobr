@@ -5,12 +5,15 @@ import { createServer } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer as createViteServer } from 'vite';
 import WebSocket from 'ws';
 
 const adminPassword = 'correct-horse-battery-admin-1';
 const memberPassword = 'correct-horse-battery-member-1';
 let dataDir;
 let baseUrl;
+let devServer;
+let devUrl;
 let child;
 let stderr = '';
 
@@ -64,9 +67,28 @@ before(async () => {
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   await waitForServer();
+
+  const originalHost = process.env.HOST;
+  const originalPort = process.env.PORT;
+  process.env.HOST = env.HOST;
+  process.env.PORT = env.PORT;
+  try {
+    devServer = await createViteServer({
+      configFile: join(process.cwd(), 'vite.config.ts'),
+      server: { host: '127.0.0.1', port: await freePort(), strictPort: true },
+    });
+    await devServer.listen();
+    devUrl = `http://127.0.0.1:${devServer.httpServer.address().port}`;
+  } finally {
+    if (originalHost === undefined) delete process.env.HOST;
+    else process.env.HOST = originalHost;
+    if (originalPort === undefined) delete process.env.PORT;
+    else process.env.PORT = originalPort;
+  }
 });
 
 after(async () => {
+  if (devServer) await devServer.close();
   if (child && child.exitCode === null) {
     child.kill('SIGTERM');
     await Promise.race([
@@ -93,6 +115,22 @@ async function request(path, cookie, options = {}) {
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   return fetch(`${baseUrl}${path}`, { ...options, headers });
 }
+
+test('development proxy allows same-origin login requests through Vite', async () => {
+  const response = await fetch(`${devUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: {
+      origin: devUrl,
+      'content-type': 'application/json',
+      'x-wiobr-request': '1',
+    },
+    body: JSON.stringify({ username: 'root-admin', password: adminPassword }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.user.role, 'admin');
+  assert.match(response.headers.get('set-cookie'), /wiobr_session=/);
+});
 
 test('auth enforces CSRF, admin roles, workspace ownership and session revocation', async () => {
   const adminCookie = await login('root-admin', adminPassword);
@@ -169,6 +207,16 @@ test('storage is owner-scoped and monitor rejects local targets', async () => {
   });
   assert.equal(invalidTask.status, 400);
   assert.equal((await invalidTask.json()).error, 'private and reserved IP addresses are not allowed');
+
+  const persistentTask = await request('/api/tasks', ownerCookie, {
+    method: 'POST',
+    headers: { 'x-wiobr-request': '1' },
+    body: JSON.stringify({ name: 'persistent process', url: 'https://example.com', type: 'persistent' }),
+  });
+  assert.equal(persistentTask.status, 422);
+  assert.match((await persistentTask.json()).error, /Persistent Web Task is unavailable/);
+  const tasks = await (await request('/api/tasks', ownerCookie)).json();
+  assert.equal(tasks.tasks.length, 0);
 });
 
 test('chat persists server-side messages and read access requires authentication', async () => {

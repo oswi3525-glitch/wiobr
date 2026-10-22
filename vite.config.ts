@@ -18,8 +18,8 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
-        '/api': apiTarget,
-        '/ws': { target: apiTarget.replace('http://', 'ws://'), ws: true },
+        '/api': { target: apiTarget, changeOrigin: true, headers: { origin: apiTarget } },
+        '/ws': { target: apiTarget.replace('http://', 'ws://'), changeOrigin: true, headers: { origin: apiTarget }, ws: true },
       },
     },
   };
